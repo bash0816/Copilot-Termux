@@ -291,6 +291,15 @@ try {
   failCount++;
 }
 
+
+// 13. MCP-BIONIC-002 bionic wiring 回帰テスト（新規SIGSEGVガードの安全ガード含む、非同期）
+try {
+  await runBionicSigsegvStubsWiringRegressionTest();
+} catch (e) {
+  console.error('[Error] MCP-BIONIC-002 wiring regression test threw:', e.message);
+  console.error(e.stack);
+  failCount++;
+}
 // 結果レポート
 console.log('\n' + '='.repeat(60));
 console.log(`Test Results: ${passCount} PASS, ${failCount} FAIL`);
@@ -353,6 +362,7 @@ async function runNetworkFetchRegressionTests() {
       sessionSqliteFileExists: () => false,
       capiClientRetrieveAvailableModels: () => ({}),
       mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => ({}),
+      mcpNativeHostConnect: () => ({}),
     };
   }
 
@@ -533,6 +543,99 @@ async function runNetworkFetchRegressionTests() {
   }
 }
 
+
+// ============================================================
+// MCP-BIONIC-002: bionic上書き経路(Module._load → runtime.node判定 → BIONIC_SIGSEGV_STUBS差し替え)
+// を通して、新規3関数(capiClientRetrieveAvailableModels/mcpClientConnectStreamableHttpWithHandlersAndOnclose/
+// mcpNativeHostConnect)が実際にJSスタブへ置換されることを確認する。
+// ============================================================
+async function runBionicSigsegvStubsWiringRegressionTest() {
+  console.log('\n[Test] MCP-BIONIC-002 bionic wiring (runtime.node replacement, async)');
+
+  const platformPatchCacheKey = require.resolve(platformPatchPath);
+  const originalModuleLoad = Module._load;
+  const savedGlibcEnv = process.env.COPILOT_TERMUX_GLIBC_MODE;
+
+  // ダミーのNAPI実装。bionic上書きが効いていれば、ダミー値は返らない。
+  function fakeRuntimeNodeExports() {
+    return {
+      capiClientRetrieveAvailableModels: () => 'DUMMY_NATIVE_VALUE',
+      mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => 'DUMMY_NATIVE_VALUE',
+      mcpNativeHostConnect: () => 'DUMMY_NATIVE_VALUE',
+    };
+  }
+
+  function restoreAll() {
+    Module._load = originalModuleLoad;
+    if (savedGlibcEnv === undefined) delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+    else process.env.COPILOT_TERMUX_GLIBC_MODE = savedGlibcEnv;
+    delete require.cache[platformPatchCacheKey];
+  }
+
+  try {
+    delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+
+    delete require.cache[platformPatchCacheKey];
+    Module._load = function (request, parent, isMain) {
+      if (typeof request === 'string' && path.basename(request) === 'runtime.node') {
+        return fakeRuntimeNodeExports();
+      }
+      return originalModuleLoad.call(this, request, parent, isMain);
+    };
+
+    require(platformPatchPath);
+    const patchedRuntime = require('runtime.node');
+
+    const patchedNames = [
+      'capiClientRetrieveAvailableModels',
+      'mcpClientConnectStreamableHttpWithHandlersAndOnclose',
+      'mcpNativeHostConnect',
+    ];
+
+    for (const name of patchedNames) {
+      let threw = false;
+      let message = '';
+      try {
+        patchedRuntime[name]();
+      } catch (e) {
+        threw = true;
+        message = e && e.message ? e.message : '';
+      }
+      assert(threw, `${name} throws a synchronous Error on bionic`);
+      assert(message.includes(name) && message.includes('unsupported on Android bionic'),
+        `${name} error message includes its own name and unsupported on Android bionic`);
+    }
+
+
+    // 異常系: 3つ目のexportが欠落したruntime.nodeでは、require時点で安全ガードが失敗することを確認する。
+    delete require.cache[platformPatchCacheKey];
+    Module._load = function (request, parent, isMain) {
+      if (typeof request === 'string' && path.basename(request) === 'runtime.node') {
+        return {
+          capiClientRetrieveAvailableModels: () => 'DUMMY_NATIVE_VALUE',
+          mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => 'DUMMY_NATIVE_VALUE',
+        };
+      }
+      return originalModuleLoad.call(this, request, parent, isMain);
+    };
+
+    require(platformPatchPath);
+
+    let requireThrew = false;
+    let requireMessage = '';
+    try {
+      require('runtime.node');
+    } catch (e) {
+      requireThrew = true;
+      requireMessage = e && e.message ? e.message : '';
+    }
+    assert(requireThrew, "missing mcpNativeHostConnect export makes require('runtime.node') throw after platform-patch.js loads");
+    assert(requireMessage.includes('BIONIC_SIGSEGV_STUBS target(s) not found') && requireMessage.includes('mcpNativeHostConnect'),
+      'missing mcpNativeHostConnect export reports the missing name in the safety-guard error message');
+  } finally {
+    restoreAll();
+  }
+}
 // ============================================================
 // GIT-ASYNC-002: bionic上書き経路(Module._load → runtime.node判定 → GIT_ASYNC_STUBS差し替え)
 // を通して、新規3関数(gitLegacyRemotesAsync/gitRepoIdentifierAtPathAsync/
@@ -552,6 +655,9 @@ async function runGitAsyncStubsWiringRegressionTest() {
       gitLegacyRemotesAsync: async () => 'DUMMY_NATIVE_VALUE',
       gitRepoIdentifierAtPathAsync: async () => 'DUMMY_NATIVE_VALUE',
       gitWorkingDirectoryContextAsync: async () => 'DUMMY_NATIVE_VALUE',
+      capiClientRetrieveAvailableModels: () => 'DUMMY_NATIVE_VALUE',
+      mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => 'DUMMY_NATIVE_VALUE',
+      mcpNativeHostConnect: () => 'DUMMY_NATIVE_VALUE',
     };
   }
 

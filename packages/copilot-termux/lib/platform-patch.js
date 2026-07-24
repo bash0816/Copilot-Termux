@@ -204,6 +204,8 @@ Module._load = function (request, parent, isMain) {
       const BIONIC_SIGSEGV_STUBS = [
         'capiClientRetrieveAvailableModels',
         'mcpClientConnectStreamableHttpWithHandlersAndOnclose',
+        'mcpNativeHostConnect', // MCP-BIONIC-002: bionic上でMCPサーバー接続処理が
+        // tokioワーカースレッド内でSIGSEGVするため、既存パターンと同型でクリーンなthrowに変換する
       ];
       for (const _key of BIONIC_SIGSEGV_STUBS) {
         if (typeof result[_key] === 'function') {
@@ -211,6 +213,14 @@ Module._load = function (request, parent, isMain) {
             throw new Error(`${_key} unsupported on Android bionic (native tokio disabled to avoid SIGSEGV)`);
           };
         }
+      }
+      const _missingBionicStubs = BIONIC_SIGSEGV_STUBS.filter(_key => typeof result[_key] !== 'function');
+      if (_missingBionicStubs.length > 0) {
+        throw new Error(
+          `[copilot-termux] BIONIC_SIGSEGV_STUBS target(s) not found in runtime.node: ${_missingBionicStubs.join(', ')}. ` +
+          'This likely means upstream renamed/removed a NAPI export that this SIGSEGV guard depends on. ' +
+          'Re-audit before releasing for bionic.'
+        );
       }
       // git*Async: Rust tokio async functions — type-safe stubs to prevent SIGSEGV.
       // Returns empty/null values matching what app.js callers expect.
