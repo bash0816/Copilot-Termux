@@ -300,6 +300,16 @@ try {
   console.error(e.stack);
   failCount++;
 }
+
+// 14. tokenStore* signature compatibility 回帰テスト(upstream 1.0.75 handle除去、非同期)
+try {
+  await runTokenStoreSignatureCompatRegressionTest();
+} catch (e) {
+  console.error('[Error] tokenStore signature compat regression test threw:', e.message);
+  console.error(e.stack);
+  failCount++;
+}
+
 // 結果レポート
 console.log('\n' + '='.repeat(60));
 console.log(`Test Results: ${passCount} PASS, ${failCount} FAIL`);
@@ -714,5 +724,117 @@ async function runGitAsyncStubsWiringRegressionTest() {
   } finally {
     restoreAll();
     fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
+}
+
+// ============================================================
+// tokenStore* JS実装の呼び出し規約回帰テスト（upstream 1.0.75 signature change）
+//
+// tokenStore*ブロックはisGlibcMode分岐の外（常時適用）のため、
+// COPILOT_TERMUX_GLIBC_MODE=1（glibc mode）で実行する。これによりbionic専用の
+// BIONIC_SIGSEGV_STUBS等の存在チェックは実行対象外になる。
+// GITHUB_TOKENは実行環境の`gh auth token`状態に依存しないよう、テスト専用の
+// センチネル値に固定してから実行し、finallyで必ず元の値へ復元する。
+// ============================================================
+async function runTokenStoreSignatureCompatRegressionTest() {
+  console.log('\n[Test] tokenStore* signature compatibility (upstream 1.0.75 handle removal, async)');
+
+  const platformPatchCacheKey = require.resolve(platformPatchPath);
+  const originalModuleLoad = Module._load;
+  const savedGlibcEnv = process.env.COPILOT_TERMUX_GLIBC_MODE;
+  const savedGithubToken = process.env.GITHUB_TOKEN;
+  const SENTINEL_TOKEN = 'test-sentinel-token-12345';
+
+  function fakeRuntimeNodeExports() {
+    return {
+      capiClientRetrieveAvailableModels: () => ({}),
+      mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => ({}),
+      mcpNativeHostConnect: () => ({}),
+    };
+  }
+
+  function restoreAll() {
+    Module._load = originalModuleLoad;
+    if (savedGlibcEnv === undefined) delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+    else process.env.COPILOT_TERMUX_GLIBC_MODE = savedGlibcEnv;
+    if (savedGithubToken === undefined) delete process.env.GITHUB_TOKEN;
+    else process.env.GITHUB_TOKEN = savedGithubToken;
+    delete require.cache[platformPatchCacheKey];
+  }
+
+  try {
+    process.env.COPILOT_TERMUX_GLIBC_MODE = '1';
+    process.env.GITHUB_TOKEN = SENTINEL_TOKEN;
+
+    delete require.cache[platformPatchCacheKey];
+    Module._load = function (request, parent, isMain) {
+      if (typeof request === 'string' && path.basename(request) === 'runtime.node') {
+        return fakeRuntimeNodeExports();
+      }
+      return originalModuleLoad.call(this, request, parent, isMain);
+    };
+
+    require(platformPatchPath);
+    const patchedRuntime = require('runtime.node');
+
+    // 1. getAnyToken: ストアが空の状態でのフォールバック確認(他のテストで値を書き込む前に実行する必要がある)
+    const anyTokenResultEmpty = await patchedRuntime.tokenStoreGetAnyToken('/tmp/fake-config.json', '{}', '{}');
+    assert(anyTokenResultEmpty === SENTINEL_TOKEN,
+      'tokenStore compat: 新規約(3引数、handle無し)のtokenStoreGetAnyTokenは_NO_HANDLEバケットが空の場合GITHUB_TOKEN環境変数へフォールバックする(gh authを実行しないため環境非依存)');
+
+    // 2. tokenStoreStoreToken: 新規約(7引数、handle無し)で true を返すこと
+    const storeResultNew = await patchedRuntime.tokenStoreStoreToken(
+      'tok-new', 'https://github.com', 'userA', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(storeResultNew === true,
+      'tokenStore compat: tokenStoreStoreToken(新規約7引数) が true を返す(1.0.75の呼び出し元が保存成功と誤認しないための修正)');
+
+    // 3. tokenStoreStoreToken: 旧規約(8引数、handle有り)でも true を返すこと
+    const legacyHandle = patchedRuntime.tokenStoreCreate();
+    const storeResultLegacy = await patchedRuntime.tokenStoreStoreToken(
+      legacyHandle, 'tok-legacy', 'https://github.com', 'userB', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(storeResultLegacy === true,
+      'tokenStore compat: tokenStoreStoreToken(旧規約8引数、handle有り) が true を返す(1.0.73以前の非退行確認)');
+
+    // 4. 新規約で書き込んだ値を、同じ新規約のtokenStoreGetTokenで読み出せること
+    const getResultNew = await patchedRuntime.tokenStoreGetToken(
+      'https://github.com', 'userA', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(getResultNew === 'tok-new',
+      'tokenStore compat: 新規約(6引数、handle無し)のtokenStoreGetTokenが同規約で保存した値を正しく読み出す');
+
+    // 5. 旧規約で書き込んだ値を、同じ旧規約のtokenStoreGetTokenで読み出せること
+    const getResultLegacy = await patchedRuntime.tokenStoreGetToken(
+      legacyHandle, 'https://github.com', 'userB', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(getResultLegacy === 'tok-legacy',
+      'tokenStore compat: 旧規約(7引数、handle有り)のtokenStoreGetTokenが同規約で保存した値を正しく読み出す(非退行確認)');
+
+    // 6. tokenStoreRemoveToken: 新規約(5引数、handle無し)・旧規約(6引数、handle有り)双方で削除できること
+    await patchedRuntime.tokenStoreRemoveToken('https://github.com', 'userA', '/tmp/fake-config.json', '{}', '{}');
+    const getAfterRemoveNew = await patchedRuntime.tokenStoreGetToken(
+      'https://github.com', 'userA', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(getAfterRemoveNew === null,
+      'tokenStore compat: 新規約(5引数、handle無し)のtokenStoreRemoveTokenが正しくキーを削除する(login指定のためフォールバックせずnull)');
+
+    await patchedRuntime.tokenStoreRemoveToken(legacyHandle, 'https://github.com', 'userB', '/tmp/fake-config.json', '{}', '{}');
+    const getAfterRemoveLegacy = await patchedRuntime.tokenStoreGetToken(
+      legacyHandle, 'https://github.com', 'userB', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(getAfterRemoveLegacy === null,
+      'tokenStore compat: 旧規約(6引数、handle有り)のtokenStoreRemoveTokenが正しくキーを削除する(非退行確認)');
+
+    // 7. セキュリティガード: 新規約でloginを指定してtokenStoreGetTokenを呼び、該当エントリが無い場合は
+    //    GITHUB_TOKEN(センチネル)へフォールバックせずnullを返すこと(login未指定時のみフォールバックが許可される設計)
+    const noAuthResult = await patchedRuntime.tokenStoreGetToken(
+      'https://github.com', 'userC-never-stored', '/tmp/fake-config.json', '{}', '{}', false
+    );
+    assert(noAuthResult === null,
+      'tokenStore compat: 新規約でlogin指定時、未保存トークンに対してGITHUB_TOKEN環境変数へフォールバックせずnullを返す(引数位置ズレ再発検知用のセキュリティガード確認)');
+
+  } finally {
+    restoreAll();
   }
 }
