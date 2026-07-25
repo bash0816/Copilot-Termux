@@ -17,6 +17,8 @@ jobs:
       actions: write
       issues: write
       pull-requests: write
+    env:
+      WATCH_FAILURE_ISSUE_TITLE: "⚠️ Copilot version watch failed"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -145,16 +147,27 @@ jobs:
           RUNTIME="$PACK_DIR/runtime.node"
           tar -xOf "$TARBALL" "$RUNTIME_RELATIVE" > "$RUNTIME"
 
-          AUDIT_JSON=$(node scripts/napi-audit.js "$RUNTIME" "$NEW_VERSION" --auto-patch)
-
-          # 監査結果本体はGITHUB_OUTPUT/envに乗せず、ランナーローカルの一時ファイルに書く。
+          # 監査結果本体はGITHUB_OUTPUT/envに乗せず、ランナーローカルの一時ファイルに直接書く。
           # (envブロック経由で渡すと、Actionsが自動的にログへ平文出力してしまうため。2026-07-19)
-          printf '%s' "$AUDIT_JSON" > "$RUNNER_TEMP/napi_audit_result.json"
+          node scripts/napi-audit.js "$RUNTIME" "$NEW_VERSION" --auto-patch > "$RUNNER_TEMP/napi_audit_result.json"
 
-          REVIEW_COUNT=$(node -e "const a=JSON.parse(process.argv[1]); process.stdout.write(String(a.newUnknown.length + a.newPendingGitAsync.length + a.newStreamRisk.length))" "$AUDIT_JSON")
-          echo "review_count=$REVIEW_COUNT" >> "$GITHUB_OUTPUT"
-          echo "tokio_patch_ok=$(node -e "const a=JSON.parse(process.argv[1]); process.stdout.write(String(a.tokioPatchOk))" "$AUDIT_JSON")" >> "$GITHUB_OUTPUT"
-          echo "issue_needed=$(node -e "const { isIssueNeeded } = require('./scripts/napi-issue-body.js'); const a=JSON.parse(process.argv[1]); process.stdout.write(String(isIssueNeeded(a)))" "$AUDIT_JSON")" >> "$GITHUB_OUTPUT"
+          # review_count/tokio_patch_ok/issue_needed の3値は、個別に
+          # `echo "x=$(node -e ...)"` で埋め込むと node 側の例外時に `set -e` が
+          # 発火せず値が空のまま後続処理へ流れてしまう(fail-open、2026-07-25判明)。
+          # node呼び出しを1回に集約し直接 $GITHUB_OUTPUT に書くことで、
+          # 例外時はこのコマンド自体が非ゼロ終了しset -eで止まる設計にする。
+          node -e "
+            const fs = require('fs');
+            const { isIssueNeeded } = require('./scripts/napi-issue-body.js');
+            const a = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/napi_audit_result.json', 'utf8'));
+            const reviewCount = a.newUnknown.length + a.newPendingGitAsync.length + a.newStreamRisk.length;
+            const lines = [
+              'review_count=' + reviewCount,
+              'tokio_patch_ok=' + a.tokioPatchOk,
+              'issue_needed=' + isIssueNeeded(a),
+            ];
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
+          "
           echo "audit_skipped=false" >> "$GITHUB_OUTPUT"
       - name: Check for existing NAPI audit issue
         id: napi_issue_check
@@ -298,12 +311,31 @@ jobs:
           echo "Dispatched npm-package.yml verify (publish=false, retag_latest=false) for version ${NEW_VERSION}"
         env:
           GH_TOKEN: ${{ github.token }}
-      - name: Report workflow failure
+      - name: Check for existing failure issue
         if: failure()
+        id: existing_failure_issue
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh issue create \
-            --title "⚠️ Copilot version watch failed" \
+          existing=$(ISSUE_TITLE="$WATCH_FAILURE_ISSUE_TITLE" gh issue list --repo "${{ github.repository }}" \
+            --state open --limit 100 --json number,title \
+            --jq '[.[] | select(.title == env.ISSUE_TITLE)] | .[0].number // empty')
+          echo "existing_issue=$existing" >> "$GITHUB_OUTPUT"
+      - name: Report workflow failure
+        if: failure() && steps.existing_failure_issue.outputs.existing_issue == ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue create --repo "${{ github.repository }}" \
+            --title "$WATCH_FAILURE_ISSUE_TITLE" \
             --body "Workflow run failed: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+      - name: Comment on existing failure issue
+        if: failure() && steps.existing_failure_issue.outputs.existing_issue != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue comment "${{ steps.existing_failure_issue.outputs.existing_issue }}" --repo "${{ github.repository }}" \
+            --body "Recurred: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
