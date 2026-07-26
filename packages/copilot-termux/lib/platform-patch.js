@@ -1257,69 +1257,20 @@ Module._load = function (request, parent, isMain) {
     }
     // glibc mode では native authResolveAuthInfoFromToken を使う（SSL_CERT_FILE で TLS 修正済み）
     // === end authManager* stubs ===
-    // === tokenStore* JS stubs (bionic: tokio ThreadsafeFunction crash + upstream 1.0.75 signature change) ===
-    // Verified tokens: set by authManagerLoginUser / _resolveOrCache after /user API check
-    const _loginTokens = new Map(); // "host:login" → oauthToken
-
-    const _tokStore = new Map();
-    let _tokSeq = 9e6;
-    const _NO_HANDLE = -1; // upstream 1.0.75+: tokenStoreCreate/Destroy呼び出し自体が無くなったため、
-                           // 単一の固定キーでプロセス内シングルトンとして扱う(1.0.73のtokenStoreCreate()も
-                           // 実質メモ化された単一handleだったため意味論は同一)
-    _tokStore.set(_NO_HANDLE, new Map());
-
-    result.tokenStoreCreate = function() { const id = ++_tokSeq; _tokStore.set(id, new Map()); return id; };
-    result.tokenStoreDestroy = function(h) { _tokStore.delete(h); };
-
-    result.tokenStoreGetToken = async function(a, b, c, d, e, f) {
-      // 新: (host, login, path, normalizerSpecJson, header, storeTokenPlaintext) 6引数 — 先頭はhost(string)
-      // 旧: (handle, host, login, path, normalizerSpecJson, header, storeTokenPlaintext) 7引数 — 先頭はhandle(number)
-      const isLegacy = typeof a === 'number';
-      const h = isLegacy ? a : _NO_HANDLE;
-      const host = isLegacy ? b : a;
-      const login = isLegacy ? c : b;
-      const m = _tokStore.get(h);
-      const key = `${(host || 'https://github.com').replace(/\/+$/, '')}:${login || ''}`;
-      if (m) { const v = m.get(key); if (v != null) return v; }
-      const lt = _loginTokens.get(key);
-      if (lt != null) { if (m) m.set(key, lt); return lt; }
-      if (login) return null;
-      return _readGhToken(null);
-    };
-    result.tokenStoreStoreToken = function(a, b, c, d, e, f, g) {
-      // 新: (token, host, login, path, normalizerSpecJson, header, storeTokenPlaintext) 7引数
-      // 旧: (handle, token, host, login, path, normalizerSpecJson, header, storeTokenPlaintext) 8引数
-      const isLegacy = typeof a === 'number';
-      const h = isLegacy ? a : _NO_HANDLE;
-      const token = isLegacy ? b : a;
-      const host = isLegacy ? c : b;
-      const login = isLegacy ? d : c;
-      const m = _tokStore.get(h);
-      if (m && token) m.set(`${(host || 'https://github.com').replace(/\/+$/, '')}:${login || ''}`, token);
-      return true; // G1 Non-blocker対応: 戻り値がundefinedだと呼び出し元 if(!await sA.storeToken(...))
-                    // が常にtrueになり、/loginのたびに不要な平文保存の同意プロンプトが発火していたため修正
-    };
-    result.tokenStoreRemoveToken = function(a, b, c) {
-      // 新: (host, login, path, normalizerSpecJson, header) 5引数 — 先頭はhost(string)
-      // 旧: (handle, host, login, path, normalizerSpecJson, header) 6引数 — 先頭はhandle(number)
-      const isLegacy = typeof a === 'number';
-      const h = isLegacy ? a : _NO_HANDLE;
-      const host = isLegacy ? b : a;
-      const login = isLegacy ? c : b;
-      const m = _tokStore.get(h);
-      if (m) m.delete(`${(host || 'https://github.com').replace(/\/+$/, '')}:${login || ''}`);
-    };
-    result.tokenStoreGetAnyToken = async function(a) {
-      // 新: (path, normalizerSpecJson, header) 3引数 — 先頭はpath(string)
-      // 旧: (handle, path, normalizerSpecJson, header) 4引数 — 先頭はhandle(number)
-      const isLegacy = typeof a === 'number';
-      const h = isLegacy ? a : _NO_HANDLE;
-      const m = _tokStore.get(h);
-      if (m && m.size > 0) return [...m.values()][0];
-      return _readGhToken(null);
-    };
-    result.tokenStoreStoreCurrentTokenInConfig = async function() {};
-    // === end tokenStore* stubs ===
+    // tokenStore*(Create/Destroy/GetToken/StoreToken/RemoveToken/GetAnyToken/
+    // StoreCurrentTokenInConfig)はJS再実装せずnativeにそのまま委譲する
+    // (2026-07-26、G1 3案目Conditional Go)。upstream 1.0.75でauthManager*が
+    // OOPのAuthManagerHandleクラスへ完全移行し、tokenStoreGetTokenが唯一のトークン
+    // 供給元になったが、native実装はbionic/glibc両モード・1.0.73/1.0.75両バージョンで
+    // config.jsonの読み書き(read-modify-write、既存エントリ保持)が正しく機能し、
+    // クラッシュしないことを実機検証済み(詳細はdocs/KNOWN-BUGS.md参照)。旧JS再実装は
+    // _tokStore/_loginTokensという常に空のメモリキャッシュしか見ておらず、
+    // config.jsonの実トークンに一切アクセスできていなかった(認証失敗の真因)。
+    //
+    // _loginTokensは直前のauthManager*ブロック(_resolveOrCache/authManagerLoginUser/
+    // authManagerSwitchToAuth)が読み書きするため、1.0.73(authManager*が生きたコード)
+    // 互換のためここに残す。tokenStore*からは一切参照されない。
+    const _loginTokens = new Map(); // "host:login" → oauthToken (authManager*ブロック専用)
 
     if (!isGlibcMode) {
     // === urlManager* JS stubs ===
