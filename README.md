@@ -6,11 +6,11 @@ Termux (Android aarch64) 向け GitHub Copilot CLI パッケージです。
 
 ## Status / 状態
 
-- **@latest**: `1.0.71`（recommended / 推奨）
+- **@latest**: `1.0.75`（recommended / 推奨）
 - package: `@bash0816/copilot-termux`
-- `copilot -p`: **available** ✅（1.0.71）
-- TUI (`copilot`): **available** ✅（1.0.71）
-- MCP: **available** ✅（1.0.71）
+- `copilot -p`: **available** ✅（1.0.75、glibc mode）
+- TUI (`copilot`): **available** ✅（1.0.75、glibc mode）
+- MCP: **available** ✅（1.0.75、glibc mode）
 
 既知の問題は [Known Issues](#known-issues--既知の問題) 参照。
 
@@ -73,6 +73,13 @@ copilot-termux setup
 - **pty.node**: Termux bionic ネイティブビルドの PTY モジュール
 
 ## Known Issues / 既知の問題
+
+- **1.0.75+: bionic フォールバック経路でクラッシュする既知の問題があります。** 本パッケージは
+  [Requirements](#requirements--必要環境) の glibc を正しくセットアップして使うことを前提としています。
+  glibc のセットアップが未完了/不十分な状態のまま実行すると bionic フォールバック経路に入り、
+  1.0.75 以降ではこの経路で `copilot` がクラッシュして起動できません。**回避策**: 上記
+  [Requirements](#requirements--必要環境) の通り `pkg install glibc-repo && pkg install glibc` を
+  実施し、glibc mode で実行してください（glibc mode では本問題は発生しません）。調査中・修正未着手です。
 
 ## Do Not Use / 非推奨
 
