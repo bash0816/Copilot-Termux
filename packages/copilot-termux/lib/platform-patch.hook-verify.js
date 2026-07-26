@@ -300,6 +300,16 @@ try {
   console.error(e.stack);
   failCount++;
 }
+
+// 14. tokenStore* ネイティブ委譲回帰テスト(upstream 1.0.75 AuthManagerHandle移行対応)
+try {
+  await runTokenStoreNativeDelegationRegressionTest();
+} catch (e) {
+  console.error('[Error] tokenStore native delegation regression test threw:', e.message);
+  console.error(e.stack);
+  failCount++;
+}
+
 // 結果レポート
 console.log('\n' + '='.repeat(60));
 console.log(`Test Results: ${passCount} PASS, ${failCount} FAIL`);
@@ -714,5 +724,103 @@ async function runGitAsyncStubsWiringRegressionTest() {
   } finally {
     restoreAll();
     fs.rmSync(tmpRepo, { recursive: true, force: true });
+  }
+}
+
+// ============================================================
+// tokenStore* ネイティブ委譲回帰テスト（upstream 1.0.75 AuthManagerHandle移行対応）
+//
+// upstream 1.0.75でauthManager*がOOPの AuthManagerHandle クラスへ完全移行し、
+// tokenStoreGetToken等の唯一のトークン供給元になった。native実装は実機検証済み
+// (bionic/glibc両モード、1.0.73/1.0.75両バージョンでconfig.jsonの読み書きが正しく
+// 機能することを確認済み、docs/build/STATUS.md参照)のため、JS再実装は全廃し
+// native実装にそのまま委譲する設計に変更した。
+//
+// このテストは「tokenStore*の7関数(Create/Destroy/GetToken/StoreToken/RemoveToken/
+// GetAnyToken/StoreCurrentTokenInConfig)がplatform-patch.jsによって一切上書きされて
+// いないこと」を、fakeRuntimeNodeExportsが返す関数への参照が変化していないかを
+// 恒等比較(===)で検証する。将来誰かが再びJS上書きを追加した場合、この関数の
+// 参照が変わるためテストが失敗する。
+// ============================================================
+async function runTokenStoreNativeDelegationRegressionTest() {
+  console.log('\n[Test] tokenStore* delegates entirely to native (no JS override, upstream 1.0.75 AuthManagerHandle migration)');
+
+  const platformPatchCacheKey = require.resolve(platformPatchPath);
+  const originalModuleLoad = Module._load;
+  const savedGlibcEnv = process.env.COPILOT_TERMUX_GLIBC_MODE;
+
+  const TOKEN_STORE_FN_NAMES = [
+    'tokenStoreCreate',
+    'tokenStoreDestroy',
+    'tokenStoreGetToken',
+    'tokenStoreStoreToken',
+    'tokenStoreRemoveToken',
+    'tokenStoreGetAnyToken',
+    'tokenStoreStoreCurrentTokenInConfig',
+  ];
+
+  // 恒等比較の基準にするsentinel関数の参照を、fakeRuntimeNodeExports()実行時に
+  // 別オブジェクトへスナップショットしておく(returnされるオブジェクト自体は
+  // platform-patch.js側でin-placeにミューテートされうるため、比較対象は
+  // 生成時点の関数参照を別途保持したものでなければならない)。
+  let originalSentinelFns = null;
+  // BIONIC_SIGSEGV_STUBS(capiClientRetrieveAvailableModels等3関数)もfakeに含める。
+  // これらが無いとbionicモード分岐(!isGlibcMode)の存在チェックでthrowし、
+  // bionicモード専用分岐へのtokenStore*再上書きを検知できないまま終わってしまう
+  // (変異テストで実証済み: bionic専用分岐への再上書きはCOPILOT_TERMUX_GLIBC_MODE=1
+  // 固定のテストでは検知不可、G3レビューNon-blocker N-1)。
+  const BIONIC_GUARD_FN_NAMES = [
+    'capiClientRetrieveAvailableModels',
+    'mcpClientConnectStreamableHttpWithHandlersAndOnclose',
+    'mcpNativeHostConnect',
+  ];
+
+  function fakeRuntimeNodeExports() {
+    const sentinels = {};
+    for (const name of TOKEN_STORE_FN_NAMES) {
+      sentinels[name] = function tokenStoreSentinel() {
+        throw new Error(`${name} sentinel was called directly - unexpected in this test`);
+      };
+    }
+    for (const name of BIONIC_GUARD_FN_NAMES) {
+      sentinels[name] = function bionicGuardSentinel() { return {}; };
+    }
+    originalSentinelFns = { ...sentinels };
+    return sentinels;
+  }
+
+  function restoreAll() {
+    Module._load = originalModuleLoad;
+    if (savedGlibcEnv === undefined) delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+    else process.env.COPILOT_TERMUX_GLIBC_MODE = savedGlibcEnv;
+    delete require.cache[platformPatchCacheKey];
+  }
+
+  try {
+    // bionicモード(デフォルト、COPILOT_TERMUX_GLIBC_MODE未設定)で実行する。
+    // tokenStore*スタブは元々「bionic tokio ThreadsafeFunction crash」を理由に
+    // 導入されていた経緯があり、再発時に最も起こりやすいのはbionic専用分岐
+    // (!isGlibcMode)へのtokenStore*再上書きである。glibc mode固定でテストすると
+    // この再発経路を検知できない(G3レビューで変異テストにより実証済み、Non-blocker
+    // N-1/N-2)。BIONIC_SIGSEGV_STUBS対象3関数をfakeに含めることで、bionic専用分岐の
+    // 存在チェックをパスしつつbionicモードでの再発検知を可能にしている。
+    delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+    delete require.cache[platformPatchCacheKey];
+    Module._load = function (request, parent, isMain) {
+      if (typeof request === 'string' && path.basename(request) === 'runtime.node') {
+        return fakeRuntimeNodeExports();
+      }
+      return originalModuleLoad.call(this, request, parent, isMain);
+    };
+
+    require(platformPatchPath);
+    const patchedRuntime = require('runtime.node');
+
+    for (const name of TOKEN_STORE_FN_NAMES) {
+      assert(patchedRuntime[name] === originalSentinelFns[name],
+        `tokenStore native delegation: ${name} is untouched by platform-patch.js (native実装にそのまま委譲されている、JS再上書きの再発検知)`);
+    }
+  } finally {
+    restoreAll();
   }
 }
