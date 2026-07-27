@@ -79,7 +79,7 @@ copilot-termux setup
   glibc のセットアップが未完了/不十分な状態のまま実行すると bionic フォールバック経路に入り、
   1.0.75 以降ではこの経路で `copilot` がクラッシュして起動できません。**回避策**: 上記
   [Requirements](#requirements--必要環境) の通り `pkg install glibc-repo && pkg install glibc` を
-  実施し、glibc mode で実行してください（glibc mode では本問題は発生しません）。調査中・修正未着手です。
+  実施し、glibc mode で実行してください（glibc mode では本問題は発生しません）。調査中です。
 
 ## Do Not Use / 非推奨
 
