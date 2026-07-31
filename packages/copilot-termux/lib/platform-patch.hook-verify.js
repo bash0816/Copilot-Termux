@@ -354,6 +354,7 @@ async function runNetworkFetchRegressionTests() {
   function fakeRuntimeNodeExports() {
     return {
       networkFetchNextRequestId: () => undefined,
+      lspClientOwnedProcessId: () => 4242,
       networkFetchStreamStart: () => undefined,
       networkFetchStreamRead: () => undefined,
       networkFetchStreamClose: () => undefined,
@@ -459,7 +460,15 @@ async function runNetworkFetchRegressionTests() {
     assert(id1 !== id2,
       'networkFetchNextRequestId() returns distinct IDs on consecutive calls');
 
-    // --- 2. networkFetchStreamStart(id, req) が thenable を返し、handle===id で解決する ---
+    // --- 2. lspClientOwnedProcessId: 同期APIはno-op化せず、他のlspClient*はno-op化する ---
+    assert(typeof patchedRuntime.lspClientOwnedProcessId === 'function',
+      'lspClientOwnedProcessId remains a function (TOKIO_EXCLUDED prevents no-op replacement)');
+    assert(patchedRuntime.lspClientOwnedProcessId() === 4242,
+      'lspClientOwnedProcessId() returns the original fixture PID');
+    assert(patchedRuntime.lspClientRequest === undefined,
+      'lspClientRequest() remains no-op and returns undefined');
+
+    // --- 3. networkFetchStreamStart(id, req) が thenable を返し、handle===id で解決する ---
     installMockFetch((url) => makeMockResponse([Buffer.from('hello')], { url }));
     const req1 = { url: 'https://example.test/a', method: 'GET', headers: {} };
     const started1 = patchedRuntime.networkFetchStreamStart(id1, req1);
