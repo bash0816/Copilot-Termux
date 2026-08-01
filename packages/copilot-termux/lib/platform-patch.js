@@ -179,19 +179,52 @@ Module._load = function (request, parent, isMain) {
   if (typeof request === 'string' &&
       path.basename(request) === 'runtime.node') {
     if (result.__copilotTermuxPatched) return result;
-    result.__copilotTermuxPatched = true;
     let _nfIdSeq = 3e6;
     const isGlibcMode = !!process.env.COPILOT_TERMUX_GLIBC_MODE;
     if (!isGlibcMode) {
+      // MCP-BIONIC-001/CAPI-RENAME-001: preflight — 実際にexportを書き換える前に、
+      // 全bionicガードグループの存在を確認する。1グループでも全alias欠落していれば、
+      // TOKIO_PATTERN一括no-op化を含む以降の変更を一切行わずthrowする(原子性)。
+      const BIONIC_SIGSEGV_STUB_GROUPS = [
+        ['capiClientRetrieveAvailableModels', 'capiClientRetrieveModelsForAuth'], // CAPI-RENAME-001: upstream 1.0.76でrename
+        ['mcpClientConnectStreamableHttpWithHandlersAndOnclose'],
+        ['mcpNativeHostConnect'], // MCP-BIONIC-002: bionic上でMCPサーバー接続処理が
+        // tokioワーカースレッド内でSIGSEGVするため、既存パターンと同型でクリーンなthrowに変換する
+      ];
+      const _missingGroups = [];
+      const _groupTargets = [];
+      for (const group of BIONIC_SIGSEGV_STUB_GROUPS) {
+        const foundNames = group.filter(name => typeof result[name] === 'function');
+        if (foundNames.length === 0) {
+          _missingGroups.push(group.join('/'));
+        } else {
+          _groupTargets.push(foundNames);
+        }
+      }
+      if (_missingGroups.length > 0) {
+        throw new Error(
+          `[copilot-termux] BIONIC_SIGSEGV_STUB_GROUPS target(s) not found in runtime.node: ${_missingGroups.join(', ')}. ` +
+          'This likely means upstream renamed/removed all known aliases for this guard. ' +
+          'Re-audit before releasing for bionic.'
+        );
+      }
+
+      // preflight通過後、ここから実際にresultをin-place変更する。
       // Rust tokio を使う関数群を no-op に差し替え。
       // sessionStore*/sessionSqlite* は非同期 SQLite (tokio)、
       // modelHttp*/networkFetch*/ahpRelay*/websocketResponses* は Rust HTTP (tokio)。
       // jsonrpcServer* は拡張 JSON-RPC サーバー (ThreadsafeFunction)、
       // lspClient* は LSP クライアント (ThreadsafeFunction)。
       // featureFlagService* は同期 Rust のため除外（no-op にすると .handle クラッシュ）。
+      // TOKIO_EXCLUDED: TOKIO_PATTERNの前方一致(lspClient等)に誤って巻き込まれる同期関数の個別除外。
+      // lspClientOwnedProcessId は同期PID取得関数(1.0.76 G3レビューで発覚、実app.js内で
+      // `u=h.lspClientOwnedProcessId(d);...{handle:d,pid:u,exit:a}`という同期使用を確認済み)。
+      const TOKIO_EXCLUDED = new Set([
+        'lspClientOwnedProcessId',
+      ]);
       const TOKIO_PATTERN = /^(ahpRelay|ahpRelayAuthenticate|ahpRelayCancelTurn|ahpRelayCoerceCopilotUsage|ahpRelayCompleteInput|ahpRelayCompletions|ahpRelayConfirmToolCall|ahpRelayConnect|ahpRelayCreate|ahpRelayCreateSession|ahpRelayDispose|ahpRelayGetPlan|ahpRelayIsTurnAlreadyActiveRejection|ahpRelayListCheckpoints|ahpRelayListWorkspaceFiles|ahpRelayPendingRequiredResourcesJson|ahpRelayProjectHostSummary|ahpRelayReadCheckpoint|ahpRelayRefreshSessions|ahpRelayReleaseSession|ahpRelayRemovePendingMessage|ahpRelaySelectAgent|ahpRelaySessionDiff|ahpRelaySetMode|ahpRelaySetModel|ahpRelaySetPendingMessage|ahpRelaySetSessionApproveAll|ahpRelaySetTitle|ahpRelayStartTurn|ahpRelayStateJson|ahpRelaySubscribeSession|ahpRelayTerminalDispose|ahpRelayTerminalEnsure|ahpRelayTerminalWrite|jsonrpcServer|jsonrpcServerAddConnection|jsonrpcServerBeginShutdown|jsonrpcServerConnectionClose|jsonrpcServerConnectionNotify|jsonrpcServerConnectionNotifyAfterResponse|jsonrpcServerConnectionRequest|jsonrpcServerConnectionWrite|jsonrpcServerCreate|jsonrpcServerDispatchComplete|jsonrpcServerRegisterHookCallback|jsonrpcServerRegisterSession|jsonrpcServerRemove|jsonrpcServerRemoveSession|jsonrpcServerStartTcpListener|jsonrpcServerStopTcpListener|jsonrpcServerUnregisterHookCallback|jsonrpcServerUnregisterSessionHookCallback|lspClient|lspClientCloseDocument|lspClientCreateOwned|lspClientCreateOwnedSandboxed|lspClientDispose|lspClientEnhanceStartupErrorMessage|lspClientFindSourceFile|lspClientInitialize|lspClientInitialized|lspClientOpenDocument|lspClientOwnedProcessId|lspClientOwnedShutdown|lspClientRequest|lspClientTakeExitInfo|lspClientWaitForDiagnostics|lspClientWaitForProjectLoad|modelHttp|modelHttpCancelRequest|modelHttpRegisterCancellation|modelHttpResetNetworking|networkFetch|networkFetchGetExtraCaPems|networkFetchNextRequestId|networkFetchRequestCancel|networkFetchResetClients|sessionSqlite|sessionSqliteClose|sessionSqliteExec|sessionSqliteFileExists|sessionSqliteOpen|sessionSqliteQuery|sessionSqliteRun|sessionStore|sessionStoreBeginForgeSkillProposalGeneration|sessionStoreClose|sessionStoreCloseAll|sessionStoreCompleteForgeSkillProposalGeneration|sessionStoreDefaultPath|sessionStoreDeleteDynamicContextItem|sessionStoreEnsureSession|sessionStoreExec|sessionStoreExecuteReadOnly|sessionStoreExecuteReadOnlyAsync|sessionStoreExecuteReadOnlyWithCap|sessionStoreFailStaleGeneratingForgeSkillProposals|sessionStoreGetCheckpoints|sessionStoreGetDynamicContextBoard|sessionStoreGetDynamicContextItem|sessionStoreGetFiles|sessionStoreGetForgeSkillProposalByFingerprint|sessionStoreGetForgeSkillProposalById|sessionStoreGetForgeSkillProposalWorkspaceBefore|sessionStoreGetForgeTrajectoryEvents|sessionStoreGetForgeTrajectoryEventsForScope|sessionStoreGetMaxTurnIndex|sessionStoreGetRefs|sessionStoreGetSession|sessionStoreGetStats|sessionStoreGetTurns|sessionStoreIncrementDynamicContextCount|sessionStoreIncrementDynamicContextReadCount|sessionStoreIndexWorkspaceArtifact|sessionStoreInsertAssistantUsageEventWithRuntimeDefaults|sessionStoreInsertCheckpointWithRuntimeDefaults|sessionStoreInsertDynamicContextItem|sessionStoreInsertFileWithRuntimeDefaults|sessionStoreInsertForgeTrajectoryEventWithRuntimeDefaults|sessionStoreInsertRefWithRuntimeDefaults|sessionStoreInsertTurnWithRuntimeDefaults|sessionStoreListForgeSkillProposals|sessionStoreOpen|sessionStoreSearch|sessionStoreTrackingEventOperations|sessionStoreTrackingExtractFilePath|sessionStoreTrackingExtractForgeTrajectoryEvents|sessionStoreTrackingExtractRefsFromBash|sessionStoreTrackingExtractRefsFromMcpTool|sessionStoreTrackingExtractRepoFromMcpTool|sessionStoreTrackingFinalizePostToolUseInput|sessionStoreTrackingFlushOperations|sessionStoreTrackingForgeAgentFeatureFlagName|sessionStoreTrackingInitSessionState|sessionStoreTrackingInitialState|sessionStoreTrackingIsForgeEnabledInEnvironment|sessionStoreTrackingIsForgeTrackingEnabled|sessionStoreTrackingPostToolUsePlan|sessionStoreTransitionForgeSkillProposalStatus|sessionStoreUpsertDynamicContextItem|sessionStoreUpsertSessionWithRuntimeDefaults|websocketResponses|websocketResponsesPersistent)/;
       for (const key of Object.keys(result)) {
-        if (TOKIO_PATTERN.test(key) && typeof result[key] === 'function') {
+        if (TOKIO_PATTERN.test(key) && !TOKIO_EXCLUDED.has(key) && typeof result[key] === 'function') {
           result[key] = () => undefined;
         }
       }
@@ -199,28 +232,14 @@ Module._load = function (request, parent, isMain) {
       // 実際に使われるため、no-opのままにはできない。TOKIO_PATTERNの一括no-op化で
       // 潰された直後にJSの単調増加ID生成で上書きする。
       result.networkFetchNextRequestId = () => 'nf-' + (++_nfIdSeq);
-      // MCP-BIONIC-001: 実機でSIGSEGV確認済みの2関数を、bionicモード限定でクリーンエラー化する。
-      // 対象外の残り10関数はdocs/KNOWN-BUGS.mdのMCP-BIONIC-001セクションに未検証事項として個別記録済み。
-      const BIONIC_SIGSEGV_STUBS = [
-        'capiClientRetrieveAvailableModels',
-        'mcpClientConnectStreamableHttpWithHandlersAndOnclose',
-        'mcpNativeHostConnect', // MCP-BIONIC-002: bionic上でMCPサーバー接続処理が
-        // tokioワーカースレッド内でSIGSEGVするため、既存パターンと同型でクリーンなthrowに変換する
-      ];
-      for (const _key of BIONIC_SIGSEGV_STUBS) {
-        if (typeof result[_key] === 'function') {
-          result[_key] = () => {
-            throw new Error(`${_key} unsupported on Android bionic (native tokio disabled to avoid SIGSEGV)`);
+
+      // preflightで確認済みのグループのみスタブ化(この時点で欠落は無いことが保証されている)
+      for (const foundNames of _groupTargets) {
+        for (const name of foundNames) {
+          result[name] = () => {
+            throw new Error(`${name} unsupported on Android bionic (native tokio disabled to avoid SIGSEGV)`);
           };
         }
-      }
-      const _missingBionicStubs = BIONIC_SIGSEGV_STUBS.filter(_key => typeof result[_key] !== 'function');
-      if (_missingBionicStubs.length > 0) {
-        throw new Error(
-          `[copilot-termux] BIONIC_SIGSEGV_STUBS target(s) not found in runtime.node: ${_missingBionicStubs.join(', ')}. ` +
-          'This likely means upstream renamed/removed a NAPI export that this SIGSEGV guard depends on. ' +
-          'Re-audit before releasing for bionic.'
-        );
       }
       // git*Async: Rust tokio async functions — type-safe stubs to prevent SIGSEGV.
       // Returns empty/null values matching what app.js callers expect.
@@ -1424,6 +1443,10 @@ Module._load = function (request, parent, isMain) {
     // === end ifcEngine* stubs ===
     }
     // --- end JS model HTTP implementation ---
+    // runtime.node に対する全パッチ処理(bionic分岐のpreflight・スタブ化・glibc共通処理)が
+    // 成功した場合にのみマーカーを設定する(原子性: 途中でthrowした場合はここに到達しないため
+    // マーカーは残らず、次回requireで再度preflightからやり直される)。
+    result.__copilotTermuxPatched = true;
   }
 
   // === cli-native.node stubs (1.0.64+: color scheme fns use Rust tokio → SIGSEGV on bionic) ===
