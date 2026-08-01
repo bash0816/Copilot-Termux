@@ -301,7 +301,16 @@ try {
   failCount++;
 }
 
-// 14. tokenStore* ネイティブ委譲回帰テスト(upstream 1.0.75 AuthManagerHandle移行対応)
+// 14. TOKIO_EXCLUDED / sessionStoreCloseAll 回帰テスト
+try {
+  await runTokioExcludedAndSessionStoreCloseAllTest();
+} catch (e) {
+  console.error('[Error] TOKIO_EXCLUDED wiring regression test threw:', e.message);
+  console.error(e.stack);
+  failCount++;
+}
+
+// 15. tokenStore* ネイティブ委譲回帰テスト(upstream 1.0.75 AuthManagerHandle移行対応)
 try {
   await runTokenStoreNativeDelegationRegressionTest();
 } catch (e) {
@@ -619,13 +628,16 @@ async function runBionicSigsegvStubsWiringRegressionTest() {
 
     // 異常系: 3つ目のexportが欠落したruntime.nodeでは、require時点で安全ガードが失敗することを確認する。
     delete require.cache[platformPatchCacheKey];
+    const originalSessionStoreClose = () => 'ORIGINAL';
+    const originalNetworkFetchNextRequestId = () => 'ORIGINAL_NETWORK_ID';
+    const fakeExport = {
+      capiClientRetrieveAvailableModels: () => 'DUMMY_NATIVE_VALUE',
+      mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => 'DUMMY_NATIVE_VALUE',
+      sessionStoreClose: originalSessionStoreClose,
+      networkFetchNextRequestId: originalNetworkFetchNextRequestId,
+    };
     Module._load = function (request, parent, isMain) {
-      if (typeof request === 'string' && path.basename(request) === 'runtime.node') {
-        return {
-          capiClientRetrieveAvailableModels: () => 'DUMMY_NATIVE_VALUE',
-          mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => 'DUMMY_NATIVE_VALUE',
-        };
-      }
+      if (typeof request === 'string' && path.basename(request) === 'runtime.node') return fakeExport;
       return originalModuleLoad.call(this, request, parent, isMain);
     };
 
@@ -640,12 +652,63 @@ async function runBionicSigsegvStubsWiringRegressionTest() {
       requireMessage = e && e.message ? e.message : '';
     }
     assert(requireThrew, "missing mcpNativeHostConnect export makes require('runtime.node') throw after platform-patch.js loads");
-    assert(requireMessage.includes('BIONIC_SIGSEGV_STUBS target(s) not found') && requireMessage.includes('mcpNativeHostConnect'),
+    assert(requireMessage.includes('BIONIC_SIGSEGV_STUB_GROUPS target(s) not found') && requireMessage.includes('mcpNativeHostConnect'),
       'missing mcpNativeHostConnect export reports the missing name in the safety-guard error message');
+    assert(fakeExport.sessionStoreClose === originalSessionStoreClose,
+      'preflight failure leaves tokio target exports unchanged (sessionStoreClose)');
+    assert(fakeExport.networkFetchNextRequestId === originalNetworkFetchNextRequestId,
+      'preflight failure leaves networkFetchNextRequestId unchanged');
   } finally {
     restoreAll();
   }
 }
+
+// ============================================================
+// TOKIO_EXCLUDED: lspClientOwnedProcessIdは同期関数として保持し、sessionStoreCloseAllはno-op化する。
+// ============================================================
+async function runTokioExcludedAndSessionStoreCloseAllTest() {
+  console.log('\n[Test] TOKIO_EXCLUDED and sessionStoreCloseAll wiring (bionic, async)');
+  const platformPatchCacheKey = require.resolve(platformPatchPath);
+  const originalModuleLoad = Module._load;
+  const savedGlibcEnv = process.env.COPILOT_TERMUX_GLIBC_MODE;
+  const originalLspClientOwnedProcessId = (handle) => 12345;
+  const originalSessionStoreCloseAll = () => 'SHOULD_BE_REPLACED';
+  const originalLspClientDispose = () => 'SHOULD_BE_NOOPED';
+  const fakeRuntime = {
+    capiClientRetrieveModelsForAuth: () => 'DUMMY_NATIVE_VALUE',
+    mcpClientConnectStreamableHttpWithHandlersAndOnclose: () => 'DUMMY_NATIVE_VALUE',
+    mcpNativeHostConnect: () => 'DUMMY_NATIVE_VALUE',
+    lspClientOwnedProcessId: originalLspClientOwnedProcessId,
+    sessionStoreCloseAll: originalSessionStoreCloseAll,
+    lspClientDispose: originalLspClientDispose,
+  };
+  try {
+    delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+    delete require.cache[platformPatchCacheKey];
+    Module._load = function (request, parent, isMain) {
+      if (typeof request === 'string' && path.basename(request) === 'runtime.node') return fakeRuntime;
+      return originalModuleLoad.call(this, request, parent, isMain);
+    };
+    require(platformPatchPath);
+    const result = require('runtime.node');
+    assert(result.lspClientOwnedProcessId === originalLspClientOwnedProcessId,
+      'TOKIO_EXCLUDED: lspClientOwnedProcessId keeps original function reference');
+    assert(result.lspClientOwnedProcessId('dummy-handle') === 12345,
+      'TOKIO_EXCLUDED: lspClientOwnedProcessId keeps synchronous PID result');
+    assert(result.sessionStoreCloseAll !== originalSessionStoreCloseAll,
+      'sessionStoreCloseAll is replaced by bionic no-op');
+    assert(result.sessionStoreCloseAll() === undefined,
+      'sessionStoreCloseAll no-op returns undefined');
+    assert(result.lspClientDispose !== originalLspClientDispose && result.lspClientDispose() === undefined,
+      'other lspClient functions remain no-op on bionic');
+  } finally {
+    Module._load = originalModuleLoad;
+    if (savedGlibcEnv === undefined) delete process.env.COPILOT_TERMUX_GLIBC_MODE;
+    else process.env.COPILOT_TERMUX_GLIBC_MODE = savedGlibcEnv;
+    delete require.cache[platformPatchCacheKey];
+  }
+}
+
 // ============================================================
 // GIT-ASYNC-002: bionic上書き経路(Module._load → runtime.node判定 → GIT_ASYNC_STUBS差し替え)
 // を通して、新規3関数(gitLegacyRemotesAsync/gitRepoIdentifierAtPathAsync/
@@ -771,6 +834,7 @@ async function runTokenStoreNativeDelegationRegressionTest() {
   // 固定のテストでは検知不可、G3レビューNon-blocker N-1)。
   const BIONIC_GUARD_FN_NAMES = [
     'capiClientRetrieveAvailableModels',
+    'capiClientRetrieveModelsForAuth',
     'mcpClientConnectStreamableHttpWithHandlersAndOnclose',
     'mcpNativeHostConnect',
   ];

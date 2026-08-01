@@ -81,6 +81,8 @@ copilot-termux setup
   [Requirements](#requirements--必要環境) の通り `pkg install glibc-repo && pkg install glibc` を
   実施し、glibc mode で実行してください（glibc mode では本問題は発生しません）。調査中です。
 
+- **1.0.76のCAPI rename検知修正**（`BIONIC_SIGSEGV_STUB_GROUPS`）により、以前は該当exportが見つからずfail-safeで早期停止していたbionicフォールバック経路が、この既知のSIGSEGVそのものへ到達するようになりました。これはrename修正自体の回帰ではありません。
+
 ## Do Not Use / 非推奨
 
 `@github/copilot` を Termux に直接インストールしないでください。bionic 非互換で動作しません。

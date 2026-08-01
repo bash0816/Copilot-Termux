@@ -6,10 +6,10 @@ Termux (Android aarch64) 向け GitHub Copilot CLI パッケージです。
 
 ## Status / 状態
 
-- **@latest**: `1.0.65-1`（recommended / 推奨。1.0.65 の TUI login regression・`/update`参照先・起動時通知バナーの問題を修正済み）
-- `copilot -p`: **available** ✅（1.0.65-1）
-- TUI (`copilot`): **available** ✅（1.0.65-1）
-- MCP: **available** ✅（1.0.65-1）
+- **@latest**: `1.0.77`（recommended / 推奨。1.0.65 の TUI login regression・`/update`参照先・起動時通知バナーの問題を修正済み）
+- `copilot -p`: **available** ✅（1.0.77）
+- TUI (`copilot`): **available** ✅（1.0.77）
+- MCP: **available** ✅（1.0.77）
 
 ## Install / インストール
 
@@ -68,6 +68,12 @@ copilot-termux setup
   - `responsesStreamDrive`: AI レスポンスストリーム処理
   - `modelHttp*`: AI モデル HTTP 呼び出し
 - **pty.node**: Termux bionic ネイティブビルドの PTY モジュール
+
+## Known Issues / 既知の問題
+
+- **1.0.75+: bionic フォールバック経路でクラッシュする既知の問題があります。** glibc のセットアップが未完了/不十分な状態ではこの経路に入り、`copilot` がクラッシュして起動できません。**回避策**: `pkg install glibc-repo && pkg install glibc` を実施し、glibc modeで実行してください。
+
+- **1.0.76のCAPI rename検知修正**（`BIONIC_SIGSEGV_STUB_GROUPS`）により、以前は該当exportが見つからずfail-safeで早期停止していたbionicフォールバック経路が、この既知のSIGSEGVそのものへ到達するようになりました。これはrename修正自体の回帰ではありません。
 
 ## License / ライセンス
 
