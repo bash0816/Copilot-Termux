@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "last_audited_copilot_version": "1.0.71",
-  "last_updated": "2026-07-16",
+  "last_updated": "2026-08-05",
   "tokio_noop_prefixes": [
     "ahpRelay",
     "ahpRelayAuthenticate",
@@ -173,7 +173,10 @@
     "gitStatusFilesAsync",
     "gitHashFilesPrefixedAsync",
     "gitHashSingleFileAsync",
-    "gitUntrackedPathsWithOptionalDirectoryAsync"
+    "gitUntrackedPathsWithOptionalDirectoryAsync",
+    "gitLegacyRemotesAsync",
+    "gitRepoIdentifierAtPathAsync",
+    "gitWorkingDirectoryContextAsync"
   ],
   "pending_git_async_stubs": [],
   "stream_pipeline_risk": [
