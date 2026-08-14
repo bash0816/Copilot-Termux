@@ -1,10 +1,13 @@
 'use strict';
 
 function isIssueNeeded(audit) {
-  return audit.newPendingGitAsync.length > 0 || audit.newStreamRisk.length > 0 || audit.tokioPatchOk === false;
+  return audit.newPendingGitAsync.length > 0
+    || audit.newStreamRisk.length > 0
+    || audit.newUnknown.length > 0
+    || audit.tokioPatchOk === false;
 }
 
-function generateIssueBody(audit, version) {
+function generateIssueBody(audit, version, fingerprint) {
   const SAFE_LIMIT = 50000;
   const lines = [];
   lines.push(`copilot@${version} の NAPI 監査結果`);
@@ -66,6 +69,10 @@ function generateIssueBody(audit, version) {
       if (closeTag) lines.push(closeTag);
       if (sectionIdx < sections.length - 1) lines.push("");
     }
+  }
+  if (fingerprint) {
+    lines.push('');
+    lines.push(`<!-- napi-audit-fingerprint: ${fingerprint} -->`);
   }
   return lines.join("\n").trimEnd() + "\n";
 }
