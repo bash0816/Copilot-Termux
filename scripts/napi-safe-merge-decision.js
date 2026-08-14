@@ -3,22 +3,22 @@
 const crypto = require('crypto');
 const { uniqueSorted } = require('./napi-audit.js');
 
-// 署名対象は監査結果全体ではなく、以下3配列のみ。
+// 署名対象は監査結果全体ではなく、以下2配列のみ(newPendingGitAsync/newStreamRisk)。
 // version/patchApplied/summary等、バージョンや実行状態に依存するフィールドは
-// 意図的に一切含めない。これにより「内容が同一なら異なるバージョン間でも
-// fingerprintが一致する」という設計目的(同一の未実装バックログが繰り返し検出される
-// だけの状況ではsafe-mergeを許容する)を実現する。この cross-version reuse は
-// バグではなく意図した挙動である(issue #30参照)。
+// 意図的に一切含めない。newUnknownも意図的に除外している
+// (runtime.nodeバイナリ全体の文字列スキャンによる残余カテゴリで、NAPIエクスポート経由で
+// 実際に呼ばれる関数かどうかを判別できておらず、数千件規模かつビルドごとに変動しうるため
+// fingerprintの安定性を損なう。issue #30参照)。これにより「内容が同一なら異なるバージョン間
+// でもfingerprintが一致する」という設計目的を実現する。
 function computeFingerprint(candidateLists, hmacKey) {
   if (!hmacKey) throw new Error('hmacKey is required and must be non-empty');
   if (!candidateLists || typeof candidateLists !== 'object') {
-    throw new Error('candidateLists must be an object with newPendingGitAsync/newStreamRisk/newUnknown arrays');
+    throw new Error('candidateLists must be an object with newPendingGitAsync/newStreamRisk arrays');
   }
   const canonical = JSON.stringify({
     schema: 'napi-fingerprint-v1',
     newPendingGitAsync: uniqueSorted(candidateLists.newPendingGitAsync || []),
     newStreamRisk: uniqueSorted(candidateLists.newStreamRisk || []),
-    newUnknown: uniqueSorted(candidateLists.newUnknown || []),
   });
   return crypto.createHmac('sha256', hmacKey).update(canonical).digest('hex');
 }

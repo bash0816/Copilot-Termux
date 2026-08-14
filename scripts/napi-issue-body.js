@@ -3,7 +3,6 @@
 function isIssueNeeded(audit) {
   return audit.newPendingGitAsync.length > 0
     || audit.newStreamRisk.length > 0
-    || audit.newUnknown.length > 0
     || audit.tokioPatchOk === false;
 }
 

@@ -188,7 +188,6 @@ jobs:
             const candidateLists = {
               newPendingGitAsync: audit.newPendingGitAsync,
               newStreamRisk: audit.newStreamRisk,
-              newUnknown: audit.newUnknown,
             };
             process.stdout.write(computeFingerprint(candidateLists, process.env.NAPI_AUDIT_FINGERPRINT_KEY));
           ")
