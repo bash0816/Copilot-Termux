@@ -185,5 +185,16 @@
     "modelHttpStreamCancel",
     "responsesStreamDrive",
     "chatCompletionStreamDrive"
-  ]
+  ],
+  "deferred_review_baseline": {
+    "schema_version": 1,
+    "fingerprint": "c732a3e1b55e4b5334fb96f4f278edfbf4b8ab3b6b4be798d1a2cd1c2491c523",
+    "counts": {
+      "newPendingGitAsync": 14,
+      "newStreamRisk": 16,
+      "newUnknown": 4269
+    },
+    "recorded_at": "2026-08-14",
+    "recorded_from_version": "1.0.80"
+  }
 }
