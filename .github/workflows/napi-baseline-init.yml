@@ -49,7 +49,6 @@ jobs:
             const candidateLists = {
               newPendingGitAsync: audit.newPendingGitAsync,
               newStreamRisk: audit.newStreamRisk,
-              newUnknown: audit.newUnknown,
             };
             const fingerprint = computeFingerprint(candidateLists, process.env.NAPI_AUDIT_FINGERPRINT_KEY);
             const configPath = 'config/napi-known-exports.json';
@@ -60,7 +59,7 @@ jobs:
               counts: {
                 newPendingGitAsync: candidateLists.newPendingGitAsync.length,
                 newStreamRisk: candidateLists.newStreamRisk.length,
-                newUnknown: candidateLists.newUnknown.length,
+                newUnknown: audit.newUnknown.length,
               },
               recorded_at: new Date().toISOString().slice(0, 10),
               recorded_from_version: audit.version,

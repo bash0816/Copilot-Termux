@@ -41,7 +41,8 @@
    - `packages/copilot-termux/config/manifest.json`: `copilot.version` と `copilot.integrity`
      - `copilot.integrity` は `npm view @github/copilot-linuxmusl-arm64@{version} dist.integrity` で取得
      - **取得失敗時は ワークフロー全体が exit 1 で失敗** → GitHub Actions issue が自動起票される
-   - **PR作成**後、napi-audit が追加のレビュー必要判定（`newUnknown`・`newPendingGitAsync`・`newStreamRisk` が存在）した場合は PR をオープンなままで手動レビュー待ち、不要な場合は admin bypass で即座にマージ
+   - **PR作成**後、napi-audit が追加のレビュー必要判定（`newPendingGitAsync`・`newStreamRisk` が存在）した場合は PR をオープンなままで手動レビュー待ち、不要な場合は admin bypass で即座にマージ
+     - `newUnknown` は参考情報として issue 本文に表示されますが、判定には含まれません（issue #30）
    - merge 後、`npm-package.yml` を dispatch（`publish=false`, `retag_latest=false`）
 
 **ログ確認**:

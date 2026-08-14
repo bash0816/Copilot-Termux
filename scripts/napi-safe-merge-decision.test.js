@@ -382,4 +382,54 @@ test('napi-safe-merge-decision module', async (t) => {
 
     assert.deepStrictEqual(result, { safeMerge: true, reason: 'matches_baseline' });
   });
+
+  // ======================
+  // Regression tests: newUnknown exclusion from fingerprint (issue #30)
+  // ======================
+  await t.test('computeFingerprint: newUnknown difference does not affect fingerprint', () => {
+    const candidateLists1 = {
+      newPendingGitAsync: ['funcA', 'funcB'],
+      newStreamRisk: ['streamX', 'streamY'],
+      newUnknown: ['unknownP', 'unknownQ'],  // 2 items
+    };
+    const candidateLists2 = {
+      newPendingGitAsync: ['funcA', 'funcB'],
+      newStreamRisk: ['streamX', 'streamY'],
+      newUnknown: ['unknownP', 'unknownQ', 'unknownR', 'unknownS', 'unknownT'],  // 5 items
+    };
+    const hmacKey = 'test-key';
+
+    const fp1 = computeFingerprint(candidateLists1, hmacKey);
+    const fp2 = computeFingerprint(candidateLists2, hmacKey);
+
+    assert.strictEqual(fp1, fp2, 'Fingerprints should be identical even when newUnknown differs (issue #30)');
+  });
+
+  await t.test('decideSafeMerge: matches baseline even when newUnknown count differs', () => {
+    const updates = {
+      newPendingGitAsync: ['funcA', 'funcB'],
+      newStreamRisk: ['streamX'],
+      newUnknown: ['unknownP', 'unknownQ', 'unknownR'],  // 3 items in current
+    };
+    const hmacKey = 'test-key';
+    const fingerprint = computeFingerprint(updates, hmacKey);
+
+    const result = decideSafeMerge({
+      updates,
+      tokioPatchOk: true,
+      auditSkipped: false,
+      baseline: {
+        schema_version: 1,
+        fingerprint,
+        counts: {
+          newPendingGitAsync: 2,
+          newStreamRisk: 1,
+          newUnknown: 10,  // different from current (3 items), but should not affect safe-merge decision
+        },
+      },
+      hmacKey,
+    });
+
+    assert.deepStrictEqual(result, { safeMerge: true, reason: 'matches_baseline' }, 'Should allow safe-merge when fingerprints match, regardless of newUnknown count difference');
+  });
 });
