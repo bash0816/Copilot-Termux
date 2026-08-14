@@ -169,23 +169,36 @@ jobs:
             fs.appendFileSync(process.env.GITHUB_OUTPUT, lines.join('\n') + '\n');
           "
           echo "audit_skipped=false" >> "$GITHUB_OUTPUT"
-      - name: Check for existing NAPI audit issue
+      - name: Check for existing NAPI audit issue (fingerprint-based)
         id: napi_issue_check
         if: steps.check_version.outputs.new_version != '' && steps.existing_pr_check.outputs.skip != 'true' && steps.napi_audit.outputs.audit_skipped != 'true' && steps.napi_audit.outputs.issue_needed == 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_ADMIN_PAT }}
-          NEW_VERSION: ${{ steps.check_version.outputs.new_version }}
+          NAPI_AUDIT_FINGERPRINT_KEY: ${{ secrets.NAPI_AUDIT_FINGERPRINT_KEY }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "ERROR: RELEASE_ADMIN_PAT secret is not set" >&2
             exit 1
           fi
-          count=$(gh issue list --repo bash0816/Github-Copilot-Termux-Private --state open \
-            --search "in:title is:open \"copilot@${NEW_VERSION}:\"" \
-            --json number --jq 'length')
-          if [ "$count" -gt 0 ]; then
+          fingerprint=$(node -e "
+            const fs = require('fs');
+            const { computeFingerprint } = require('./scripts/napi-safe-merge-decision.js');
+            const audit = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/napi_audit_result.json', 'utf8'));
+            const candidateLists = {
+              newPendingGitAsync: audit.newPendingGitAsync,
+              newStreamRisk: audit.newStreamRisk,
+              newUnknown: audit.newUnknown,
+            };
+            process.stdout.write(computeFingerprint(candidateLists, process.env.NAPI_AUDIT_FINGERPRINT_KEY));
+          ")
+          existing=$(FINGERPRINT="$fingerprint" gh issue list --repo bash0816/Github-Copilot-Termux-Private \
+            --state open --json number,title,body --limit 1000 \
+            --jq '[.[] | select(.title | contains("要レビューの新規 NAPI エクスポートを検出")) | select(.body | contains("napi-audit-fingerprint: " + env.FINGERPRINT))] | .[0].number // empty')
+          echo "fingerprint=$fingerprint" >> "$GITHUB_OUTPUT"
+          if [ -n "$existing" ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "existing_issue_number=$existing" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
@@ -194,6 +207,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.RELEASE_ADMIN_PAT }}
           NEW_VERSION: ${{ steps.check_version.outputs.new_version }}
+          NAPI_FINGERPRINT_FOR_BODY: ${{ steps.napi_issue_check.outputs.fingerprint }}
         run: |
           set -euo pipefail
           if [ -z "${GH_TOKEN:-}" ]; then
@@ -205,8 +219,20 @@ jobs:
             const { generateIssueBody } = require("./scripts/napi-issue-body.js");
             const audit = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + "/napi_audit_result.json", "utf8"));
             const version = process.env.NEW_VERSION;
-            process.stdout.write(generateIssueBody(audit, version));
+            const fingerprint = process.env.NAPI_FINGERPRINT_FOR_BODY;
+            process.stdout.write(generateIssueBody(audit, version, fingerprint));
           ' | gh issue create --repo bash0816/Github-Copilot-Termux-Private --title "⚠️ copilot@${NEW_VERSION}: 要レビューの新規 NAPI エクスポートを検出" --body-file -
+        id: create_napi_issue
+      - name: Comment on existing matching NAPI issue
+        if: steps.check_version.outputs.new_version != '' && steps.existing_pr_check.outputs.skip != 'true' && steps.napi_audit.outputs.audit_skipped != 'true' && steps.napi_audit.outputs.issue_needed == 'true' && steps.napi_issue_check.outputs.exists == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_PAT }}
+          NEW_VERSION: ${{ steps.check_version.outputs.new_version }}
+        run: |
+          set -euo pipefail
+          gh issue comment "${{ steps.napi_issue_check.outputs.existing_issue_number }}" \
+            --repo bash0816/Github-Copilot-Termux-Private \
+            --body "copilot@${NEW_VERSION}でも同一内容を再検出しました(自動)。"
       - name: Commit changes to branch
         if: steps.check_version.outputs.new_version != '' && steps.existing_pr_check.outputs.skip != 'true'
         id: commit_branch
@@ -260,16 +286,39 @@ jobs:
             echo "PR created: $pr_url"
           fi
           echo "pr_number=$pr_number" >> "$GITHUB_OUTPUT"
+      - name: Determine safe-merge decision
+        id: safe_merge_decision
+        if: steps.commit_branch.outputs.has_changes == 'true'
+        env:
+          NAPI_AUDIT_FINGERPRINT_KEY: ${{ secrets.NAPI_AUDIT_FINGERPRINT_KEY }}
+        run: |
+          set -euo pipefail
+          node -e "
+            const fs = require('fs');
+            const { decideSafeMerge } = require('./scripts/napi-safe-merge-decision.js');
+            const updates = JSON.parse(fs.readFileSync(process.env.RUNNER_TEMP + '/napi_audit_result.json', 'utf8'));
+            const configRaw = fs.readFileSync('config/napi-known-exports.json', 'utf8');
+            const baseline = JSON.parse(configRaw).deferred_review_baseline;
+            const result = decideSafeMerge({
+              updates,
+              tokioPatchOk: '${{ steps.napi_audit.outputs.tokio_patch_ok }}' === 'true',
+              auditSkipped: '${{ steps.napi_audit.outputs.audit_skipped }}' === 'true',
+              baseline,
+              hmacKey: process.env.NAPI_AUDIT_FINGERPRINT_KEY,
+            });
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'safe_merge=' + result.safeMerge + '\n');
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, 'safe_merge_reason=' + result.reason + '\n');
+          "
       - name: Safe-merge or leave for review
+        id: safe_merge
         if: steps.commit_branch.outputs.has_changes == 'true'
         env:
           GH_TOKEN: ${{ secrets.RELEASE_ADMIN_PAT }}
         run: |
           set -euo pipefail
           pr_number="${{ steps.pr_create.outputs.pr_number }}"
-          audit_skipped="${{ steps.napi_audit.outputs.audit_skipped }}"
-          review_count="${{ steps.napi_audit.outputs.review_count }}"
-          tokio_patch_ok="${{ steps.napi_audit.outputs.tokio_patch_ok }}"
+          safe_merge="${{ steps.safe_merge_decision.outputs.safe_merge }}"
+          safe_merge_reason="${{ steps.safe_merge_decision.outputs.safe_merge_reason }}"
 
           if [ -z "${GH_TOKEN:-}" ]; then
             echo "ERROR: RELEASE_ADMIN_PAT secret is not set" >&2
@@ -280,7 +329,7 @@ jobs:
             exit 1
           fi
 
-          if [ "$audit_skipped" != "true" ] && [ "$review_count" = "0" ] && [ "$tokio_patch_ok" = "true" ]; then
+          if [ "$safe_merge" = "true" ]; then
             branch="${{ steps.commit_branch.outputs.branch }}"
             git fetch origin main "$branch"
             pr_head_sha=$(gh pr view "$pr_number" --json headRefOid --jq '.headRefOid')
@@ -290,13 +339,12 @@ jobs:
             fi
             gh pr merge "$pr_number" --admin --squash --delete-branch
             echo "safe_merged=true" >> "$GITHUB_OUTPUT"
-            echo "Manifest PR #${pr_number} merged (admin bypass, safe conditions met)"
+            echo "Manifest PR #${pr_number} merged (admin bypass, reason=$safe_merge_reason)"
           else
             echo "safe_merged=false" >> "$GITHUB_OUTPUT"
-            gh pr comment "$pr_number" --body "自動マージをスキップしました(audit_skipped=$audit_skipped, review_count=$review_count, tokio_patch_ok=$tokio_patch_ok)。要人間レビュー: docs/operations/platform-patch-update-guide.md に従いbehavioral stub実装確認後にマージしてください。マージ後は手動でnpm-package.ymlをdispatchしてください。"
-            echo "Manifest PR #${pr_number} left open for human review (safe-merge conditions not met)"
+            gh pr comment "$pr_number" --body "自動マージをスキップしました(reason=$safe_merge_reason)。要人間レビュー: docs/operations/platform-patch-update-guide.md に従いbehavioral stub実装確認後にマージしてください。マージ後は手動でnpm-package.ymlをdispatchしてください。"
+            echo "Manifest PR #${pr_number} left open for human review (reason=$safe_merge_reason)"
           fi
-        id: safe_merge
       - name: Dispatch npm-package verify
         if: steps.check_version.outputs.new_version != '' && steps.existing_pr_check.outputs.skip != 'true' && steps.safe_merge.outputs.safe_merged == 'true'
         run: |

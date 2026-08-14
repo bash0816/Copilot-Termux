@@ -62,7 +62,7 @@ test('isIssueNeeded and generateIssueBody', async (t) => {
     assert.ok(body.includes('newTokio (2件、クリックして展開)'), 'Should include tokio section');
   });
 
-  await t.test('fixture_no_issue_needed - newUnknown alone does not trigger issue', () => {
+  await t.test('fixture_issue_needed_for_unknown - newUnknown alone now triggers issue', () => {
     const audit = {
       newTokio: [],
       newPendingGitAsync: [],
@@ -71,7 +71,7 @@ test('isIssueNeeded and generateIssueBody', async (t) => {
       tokioPatchOk: true,
     };
 
-    assert.strictEqual(isIssueNeeded(audit), false, 'Should NOT need issue when only newUnknown has items');
+    assert.strictEqual(isIssueNeeded(audit), true, 'Should need issue when newUnknown alone has items (changed 2026-08-14, see issue #30)');
 
     const body = generateIssueBody(audit, '1.0.72');
     assert.ok(body.length > 0, 'Should still generate body');
