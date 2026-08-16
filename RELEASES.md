@@ -1,4 +1,17 @@
-## 1.0.79 — 2026-08-12 🚀 Latest / 最新版
+## 1.0.80 — 2026-08-16 🚀 Latest / 最新版
+
+upstream @github/copilot@1.0.80 追従。
+
+### Install
+
+```sh
+npm install -g @bash0816/copilot-termux@latest
+copilot-termux setup
+copilot --version
+```
+
+---
+## 1.0.79 — 2026-08-12 / 旧版
 
 upstream `@github/copilot@1.0.79` 追従。
 
