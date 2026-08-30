@@ -6,10 +6,10 @@ Termux (Android aarch64) 向け GitHub Copilot CLI パッケージです。
 
 ## Status / 状態
 
-- **@latest**: `1.0.77`（recommended / 推奨。1.0.65 の TUI login regression・`/update`参照先・起動時通知バナーの問題を修正済み）
-- `copilot -p`: **available** ✅（1.0.77）
-- TUI (`copilot`): **available** ✅（1.0.77）
-- MCP: **available** ✅（1.0.77）
+- **@latest**: `1.0.82`（recommended / 推奨。1.0.65 の TUI login regression・`/update`参照先・起動時通知バナーの問題を修正済み）
+- `copilot -p`: **available** ✅（1.0.82）
+- TUI (`copilot`): **available** ✅（1.0.82）
+- MCP: **available** ✅（1.0.82）
 
 ## Install / インストール
 
